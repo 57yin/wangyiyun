@@ -21,7 +21,7 @@ PLAYLISTS = [
 
 COMMENTS_PER_REQUEST = 20  # 每次请求获取20条
 REQUEST_DELAY = 4  # 请求间隔（秒）
-ROOT_RESULT_DIR = "multi_playlist_results"
+ROOT_RESULT_DIR = r"D:\vscode\analysis_app\multi_playlist_results"
 NEGATIVE_THRESHOLD = 0.4  # 消极情感阈值
 POSITIVE_THRESHOLD = 0.6  # 积极情感阈值
 DAILY_UPDATE_TIME = "02:00"  # 定时任务时间

@@ -1,6 +1,3 @@
-import subprocess
-import sys
-from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -9,6 +6,9 @@ import numpy as np
 import streamlit as st
 from collections import Counter
 import jieba
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from pathlib import Path
 
 # 依赖安装相关函数（保持不变）
 def install_deps():
