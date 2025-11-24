@@ -335,6 +335,7 @@ def plot_style_playlist_visualizations(df):
     # 创建标签页
     tab1, tab2, tab3, tab4 = st.tabs(['分类分析', '时间趋势', '相关性分析', '高级洞察'])
     
+
     # Tab 1: 分类分析
     with tab1:
         col1, col2 = st.columns(2)
@@ -353,7 +354,7 @@ def plot_style_playlist_visualizations(df):
             )
             fig.update_layout(height=400)
             st.plotly_chart(fig, use_container_width=True)
-        
+    
         with col2:
             # 各分类平均播放量
             avg_play = df.groupby('分类')['播放次数'].mean().sort_values(ascending=False)
@@ -371,18 +372,19 @@ def plot_style_playlist_visualizations(df):
         
         # 各分类综合指标雷达图
         st.markdown("### 各分类综合表现对比")
-        top_categories = df['分类'].value_counts().head(6).index
-        cat_metrics = df[df['分类'].isin(top_categories)].groupby('分类').agg({
+        # 修改点：获取所有分类，不再限制前6类
+        all_categories = df['分类'].unique()  
+        cat_metrics = df[df['分类'].isin(all_categories)].groupby('分类').agg({
             '播放次数': 'mean',
             '收藏量': 'mean',
             '评论数': 'mean',
             '歌单长度': 'mean'
         }).reset_index()
-        
+    
         # 数据标准化
         for col in ['播放次数', '收藏量', '评论数', '歌单长度']:
             cat_metrics[col] = (cat_metrics[col] - cat_metrics[col].min()) / (cat_metrics[col].max() - cat_metrics[col].min())
-        
+    
         fig = go.Figure()
         for _, row in cat_metrics.iterrows():
             fig.add_trace(go.Scatterpolar(
@@ -398,44 +400,59 @@ def plot_style_playlist_visualizations(df):
             template='plotly_white'
         )
         st.plotly_chart(fig, use_container_width=True)
+
     
-    # Tab 2: 时间趋势
-    with tab2:
-        # 按月份统计歌单创建数量
-        monthly_trend = df.groupby('创建月份').size().reset_index(name='歌单数量')
-        monthly_trend['创建月份'] = monthly_trend['创建月份'].astype(str)
-        
-        fig = px.line(
-            monthly_trend,
-            x='创建月份',
-            y='歌单数量',
-            title='歌单创建时间趋势',
-            labels={'创建月份': '月份', '歌单数量': '新增歌单数量'},
-            template='plotly_white',
-            markers=True
-        )
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # 近6个月各分类歌单增长情况
-        recent_months = df['创建月份'].unique()[-6:] if len(df['创建月份'].unique()) >=6 else df['创建月份'].unique()
-        recent_data = df[df['创建月份'].isin(recent_months)]
-        
-        if len(recent_data) > 0:
-            monthly_cat = recent_data.groupby(['创建月份', '分类']).size().reset_index(name='歌单数量')
-            monthly_cat['创建月份'] = monthly_cat['创建月份'].astype(str)
-            
-            fig = px.area(
-                monthly_cat,
+        # Tab 2: 时间趋势
+        with tab2:
+            # 按月份统计筛选后歌单的创建数量（整体趋势）
+            monthly_trend = df.groupby('创建月份').size().reset_index(name='歌单数量')
+            monthly_trend['创建月份'] = monthly_trend['创建月份'].astype(str)
+    
+            fig = px.line(
+                monthly_trend,
                 x='创建月份',
                 y='歌单数量',
-                color='分类',
-                title='近6个月各分类歌单增长趋势',
-                labels={'创建月份': '月份', '歌单数量': '歌单数量'},
-                template='plotly_white'
+                title='筛选后歌单创建时间趋势',
+                labels={'创建月份': '月份', '歌单数量': '新增歌单数量'},
+                template='plotly_white',
+                markers=True
             )
             fig.update_layout(height=400)
             st.plotly_chart(fig, use_container_width=True)
+            
+            # 近6个月各分类歌单增长情况（基于筛选后的数据）
+            if not df.empty and not df['创建日期'].isna().all():
+                # 1. 从筛选后的数据中获取最新月份（Period类型）
+                latest_month_period = df['创建日期'].dt.to_period('M').max()
+                latest_month_dt = latest_month_period.to_timestamp()  # 转为datetime用于计算
+                
+                # 2. 计算筛选后数据的"近6个月"起始时间
+                from dateutil.relativedelta import relativedelta
+                six_months_ago_dt = latest_month_dt - relativedelta(months=6)
+                six_months_ago_period = six_months_ago_dt.to_period('M')  # 转回Period用于筛选
+                
+                # 3. 从筛选后的数据中，再筛选近6个月的记录
+                recent_data = df[df['创建月份'].between(six_months_ago_period, latest_month_period)]
+            
+                if len(recent_data) > 0:
+                    monthly_cat = recent_data.groupby(['创建月份', '分类']).size().reset_index(name='歌单数量')
+                    monthly_cat['创建月份'] = monthly_cat['创建月份'].astype(str)
+                    
+                    fig = px.area(
+                        monthly_cat,
+                        x='创建月份',
+                        y='歌单数量',
+                        color='分类',
+                        title='筛选后近6个月各分类歌单增长趋势',  # 标题明确标注"筛选后"
+                        labels={'创建月份': '月份', '歌单数量': '歌单数量'},
+                        template='plotly_white'
+                    )
+                    fig.update_layout(height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("筛选后的数据中，近6个月内没有找到歌单数据")
+            else:
+                st.info("筛选后的数据中没有有效日期数据，无法展示近6个月趋势")
     
     # Tab 3: 相关性分析
     with tab3:
@@ -512,17 +529,21 @@ def plot_style_playlist_visualizations(df):
             title='收藏率最高的10个歌单 (收藏量/播放量%)',
             labels={'名称': '歌单名称', '收藏播放比': '收藏率(%)'},
             template='plotly_white',
-            hover_data=['播放次数', '收藏量', '创建日期']
+            hover_data=['播放次数', '收藏量', '创建日期'],
+            category_orders={"名称": high_fav_ratio_df.sort_values('收藏播放比', ascending=False)['名称'].tolist()}
         )
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
         
         # 歌单长度分布
         st.markdown("### 歌单长度分布")
+        # 计算合适的 nbins 值，这里假设歌单长度最大可能到 10000，你可根据实际数据调整
+        max_playlist_length = df['歌单长度'].max() if not df.empty else 10000
+        nbins = int(max_playlist_length / 10)  
         fig = px.histogram(
             df,
             x='歌单长度',
-            nbins=30,
+            nbins=nbins,
             title='歌单长度分布',
             labels={'歌单长度': '歌曲数量', 'count': '歌单数量'},
             color_discrete_sequence=['#4ECDC4'],
@@ -556,6 +577,7 @@ def plot_style_playlist_visualizations(df):
 
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 def plot_rank_comment_visualizations(df):
     """4类榜单歌曲评论可视化"""
@@ -677,22 +699,43 @@ def plot_rank_comment_visualizations(df):
     with tab3:
         # 合并所有高频词
         all_keywords = []
-        for keywords in df['高频字眼'].dropna():
-            if keywords and keywords != '':
-                all_keywords.extend([kw.strip() for kw in keywords.split(',') if kw.strip()])
+        # 先遍历每行的高频词字符串
+        for keywords_str in df['高频字眼'].dropna():
+            if keywords_str and keywords_str != '':
+                # 按逗号拆分，得到单个词列表
+                single_keywords = [kw.strip() for kw in keywords_str.split(',') if kw.strip()]
+                # 将单个词逐个加入总列表
+                all_keywords.extend(single_keywords)
         
         if all_keywords:
+            # 统计单个词的出现次数
+            keyword_counts = Counter(all_keywords).most_common()  # 可指定数量，如 .most_common(20) 获取Top20
+            keywords_df = pd.DataFrame(keyword_counts, columns=['关键词', '出现次数'])
             # 新增：将高频词列表转换为文本字符串
             keywords_text = ' '.join(all_keywords)  # 用空格连接高频词，供词云使用
+            # 1. 定义项目内字体路径（fonts文件夹下的simsun.ttc）
+            font_dir = Path(__file__).parent / "fonts"
+            font_path = font_dir / "STZHONGS.TTF"  # 确保字体文件名正确
             
-            keyword_counts = Counter(all_keywords).most_common(20)
-            keywords_df = pd.DataFrame(keyword_counts, columns=['关键词', '出现次数'])
-            
-            # 生成词云
-            font_path = 'C:/Windows/Fonts/simsun.ttc'
+            # 2. 验证字体文件是否存在，不存在则尝试系统字体，最后fallback
+            if not font_path.exists():
+                st.warning("项目内字体文件未找到，尝试加载系统字体...")
+                # 尝试系统字体（兼容不同环境）
+                system_fonts = [
+                    "C:/Windows/Fonts/STZHONGS.TTF"          # Windows
+                ]
+                for sys_font in system_fonts:
+                    if Path(sys_font).exists():
+                        font_path = Path(sys_font)
+                        break
+                else:
+                    # 所有尝试失败，用默认字体（可能无法显示中文，但不报错）
+                    font_path = None
+                    st.warning("系统字体也未找到，词云可能无法显示中文！")
 
+            # 生成词云
             wordcloud = WordCloud(
-                font_path=font_path,  # 新增字体路径参数，让 WordCloud 用指定字体渲染
+                font_path=str(font_path) if font_path else None,  # 路径转字符串（WordCloud需要str类型）
                 width=800,
                 height=400,
                 background_color='white',
@@ -702,7 +745,7 @@ def plot_rank_comment_visualizations(df):
                 contour_width=3,
                 contour_color=COLOR_PALETTE['primary']
             ).generate(keywords_text)  # 现在 keywords_text 已定义
-            
+                
             # 显示词云
             st.markdown("### 高频词云图")
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -710,20 +753,15 @@ def plot_rank_comment_visualizations(df):
             ax.axis('off')
             st.pyplot(fig)
             
-            # 原来的高频词条形图和榜单对比
-            keyword_counts = Counter(all_keywords).most_common(20)
-            keywords_df = pd.DataFrame(keyword_counts, columns=['关键词', '出现次数'])
-            
+            # ------ 高频词条形图（单个词统计，展示每个词的出现次数） ------
             col1, col2 = st.columns(2)
-            
             with col1:
-                # 高频词词云（条形图模拟）
                 fig = px.bar(
                     keywords_df,
                     x='出现次数',
                     y='关键词',
                     orientation='h',
-                    title='所有歌曲高频关键词 Top 20',
+                    title='所有歌曲高频关键词统计（单个词）',
                     labels={'出现次数': '出现次数', '关键词': '关键词'},
                     color='出现次数',
                     color_continuous_scale='Viridis',
@@ -731,30 +769,27 @@ def plot_rank_comment_visualizations(df):
                 )
                 fig.update_layout(height=500)
                 st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                # 各榜单高频词对比（取前5个）
-                st.markdown("### 各榜单Top5高频词")
-                rank_keywords = {}
-                
-                for rank in df['榜单类型'].unique():
-                    rank_df = df[df['榜单类型'] == rank]
-                    rank_keywords_list = []
-                    
-                    for keywords in rank_df['高频字眼'].dropna():
-                        if keywords and keywords != '':
-                            rank_keywords_list.extend([kw.strip() for kw in keywords.split(',') if kw.strip()])
-                    
-                    if rank_keywords_list:
-                        rank_keywords[rank] = Counter(rank_keywords_list).most_common(5)
-                
-                # 创建表格显示
-                for rank, keywords in rank_keywords.items():
-                    st.subheader(f"{rank}")
-                    kw_df = pd.DataFrame(keywords, columns=['关键词', '出现次数'])
-                    st.dataframe(kw_df, use_container_width=True)
-        else:
-            st.info("没有找到有效的高频词数据")
+
+                # ------ 各榜单高频词对比（单个词，取各榜单TopN ） ------
+                with col2:
+                    st.markdown("### 各榜单TopN高频词（单个词）")
+                    rank_keywords = {}
+                    for rank in df['榜单类型'].unique():
+                        rank_df = df[df['榜单类型'] == rank]
+                        rank_single_keywords = []
+                        for keywords_str in rank_df['高频字眼'].dropna():
+                            if keywords_str and keywords_str != '':
+                                single_keywords = [kw.strip() for kw in keywords_str.split(',') if kw.strip()]
+                                rank_single_keywords.extend(single_keywords)
+                        if rank_single_keywords:
+                            # 统计单个词在该榜单的出现次数，取TopN（如Top5 ）
+                            rank_keywords[rank] = Counter(rank_single_keywords).most_common(5)  
+
+                    # 表格显示各榜单单个高频词及次数
+                    for rank, keywords in rank_keywords.items():
+                        st.subheader(f"{rank}")
+                        kw_df = pd.DataFrame(keywords, columns=['关键词', '出现次数'])
+                        st.dataframe(kw_df, use_container_width=True)
   
     # Tab 4: 高级洞察
     with tab4:
@@ -1083,6 +1118,7 @@ def main():
         
         # 高级可视化
         if not filtered_df.empty:
+            st.markdown("---")
             if selected_data_source == "13类风格歌单数据":
                 plot_style_playlist_visualizations(filtered_df)
             else:

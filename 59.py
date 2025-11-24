@@ -1,6 +1,3 @@
-import subprocess
-import sys
-from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -9,10 +6,16 @@ import numpy as np
 import streamlit as st
 from collections import Counter
 import jieba
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from pathlib import Path
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import re
 
 # 依赖安装相关函数（保持不变）
 def install_deps():
-    required_packages = ['streamlit>=1.28.0', 'pandas', 'plotly', 'openpyxl', 'numpy', 'jieba']
+    required_packages = ['streamlit>=1.28.0', 'pandas', 'plotly', 'openpyxl', 'numpy', 'jieba', 'scikit-learn']
     try:
         import pkg_resources
         installed = {p.key for p in pkg_resources.working_set}
@@ -31,6 +34,8 @@ try:
     if tuple(map(int, st_version.split('.'))) < (1, 28, 0):
         print("Streamlit 版本过低，需要升级...")
         raise ImportError("Streamlit version too old")
+    # 检查scikit-learn是否安装
+    import sklearn
 except (ImportError, Exception):
     print("检测到缺失依赖或版本不兼容，正在尝试自动安装...")
     install_deps()
@@ -43,6 +48,9 @@ except (ImportError, Exception):
     import streamlit as st
     from collections import Counter
     import jieba
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    import re
 
 # ---------------------- 全局配置 ----------------------
 st.set_page_config(
@@ -74,6 +82,36 @@ custom_style = """
         #MainMenu {visibility: hidden !important;}
         footer {visibility: hidden !important;}
         header {visibility: hidden !important;}
+        
+        /* 推荐卡片样式 */
+        .recommendation-card {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-left: 5px solid #1DB954;
+        }
+        
+        .recommendation-card h4 {
+            color: #1DB954;
+            margin-bottom: 10px;
+        }
+        
+        .recommendation-card p {
+            margin: 5px 0;
+            color: #333333;
+        }
+        
+        .recommendation-card .match-score {
+            background-color: #1DB954;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            display: inline-block;
+            margin-top: 10px;
+        }
         
         /* 其他样式保持不变... */
     </style>
@@ -148,6 +186,13 @@ def load_style_playlist_data():
     combined_df['收藏播放比'] = (combined_df['收藏量'] / combined_df['播放次数'] * 100).round(4)
     combined_df['评论播放比'] = (combined_df['评论数'] / combined_df['播放次数'] * 100).round(4)
     combined_df['创建月份'] = combined_df['创建日期'].dt.to_period('M')
+    
+    # 为推荐系统添加的预处理
+    # 1. 创建歌单特征文本（名称+分类+标签）
+    combined_df['特征文本'] = combined_df['名称'] + ' ' + combined_df['分类'] + ' ' + combined_df['tag1']
+    # 2. 处理缺失值
+    combined_df['特征文本'] = combined_df['特征文本'].fillna('')
+    
     return combined_df, found_files, skipped_files, dup_count
 
 def load_rank_comment_data():
@@ -190,6 +235,13 @@ def load_rank_comment_data():
                   else '消极' if x['消极评论占比'] > x['积极评论占比'] and x['消极评论占比'] > 0.3
                   else '中立', axis=1
     )
+    
+    # 为推荐系统添加的预处理
+    # 1. 创建歌曲特征文本（名称+歌手+榜单类型+高频字眼+情感倾向）
+    combined_df['特征文本'] = combined_df['歌曲名称'] + ' ' + combined_df['歌手'] + ' ' + combined_df['榜单类型'] + ' ' + combined_df['高频字眼'].fillna('') + ' ' + combined_df['情感倾向']
+    # 2. 处理缺失值
+    combined_df['特征文本'] = combined_df['特征文本'].fillna('')
+    
     return combined_df, found_ranks, skipped_ranks
 
 def load_all_data(selected_data_source):
@@ -333,7 +385,7 @@ def plot_style_playlist_visualizations(df):
     st.markdown('<div class="sub-title">🎯 风格歌单深度分析</div>', unsafe_allow_html=True)
     
     # 创建标签页
-    tab1, tab2, tab3, tab4 = st.tabs(['分类分析', '时间趋势', '相关性分析', '高级洞察'])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(['分类分析', '时间趋势', '相关性分析', '高级洞察', '智能推荐'])
     
     # Tab 1: 分类分析
     with tab1:
@@ -353,7 +405,7 @@ def plot_style_playlist_visualizations(df):
             )
             fig.update_layout(height=400)
             st.plotly_chart(fig, use_container_width=True)
-        
+    
         with col2:
             # 各分类平均播放量
             avg_play = df.groupby('分类')['播放次数'].mean().sort_values(ascending=False)
@@ -371,18 +423,19 @@ def plot_style_playlist_visualizations(df):
         
         # 各分类综合指标雷达图
         st.markdown("### 各分类综合表现对比")
-        top_categories = df['分类'].value_counts().head(6).index
-        cat_metrics = df[df['分类'].isin(top_categories)].groupby('分类').agg({
+        # 修改点：获取所有分类，不再限制前6类
+        all_categories = df['分类'].unique()  
+        cat_metrics = df[df['分类'].isin(all_categories)].groupby('分类').agg({
             '播放次数': 'mean',
             '收藏量': 'mean',
             '评论数': 'mean',
             '歌单长度': 'mean'
         }).reset_index()
-        
+    
         # 数据标准化
         for col in ['播放次数', '收藏量', '评论数', '歌单长度']:
             cat_metrics[col] = (cat_metrics[col] - cat_metrics[col].min()) / (cat_metrics[col].max() - cat_metrics[col].min())
-        
+    
         fig = go.Figure()
         for _, row in cat_metrics.iterrows():
             fig.add_trace(go.Scatterpolar(
@@ -398,18 +451,19 @@ def plot_style_playlist_visualizations(df):
             template='plotly_white'
         )
         st.plotly_chart(fig, use_container_width=True)
+
     
     # Tab 2: 时间趋势
     with tab2:
-        # 按月份统计歌单创建数量
+        # 按月份统计筛选后歌单的创建数量（整体趋势）
         monthly_trend = df.groupby('创建月份').size().reset_index(name='歌单数量')
         monthly_trend['创建月份'] = monthly_trend['创建月份'].astype(str)
-        
+    
         fig = px.line(
             monthly_trend,
             x='创建月份',
             y='歌单数量',
-            title='歌单创建时间趋势',
+            title='筛选后歌单创建时间趋势',
             labels={'创建月份': '月份', '歌单数量': '新增歌单数量'},
             template='plotly_white',
             markers=True
@@ -417,25 +471,39 @@ def plot_style_playlist_visualizations(df):
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
         
-        # 近6个月各分类歌单增长情况
-        recent_months = df['创建月份'].unique()[-6:] if len(df['创建月份'].unique()) >=6 else df['创建月份'].unique()
-        recent_data = df[df['创建月份'].isin(recent_months)]
-        
-        if len(recent_data) > 0:
-            monthly_cat = recent_data.groupby(['创建月份', '分类']).size().reset_index(name='歌单数量')
-            monthly_cat['创建月份'] = monthly_cat['创建月份'].astype(str)
+        # 近6个月各分类歌单增长情况（基于筛选后的数据）
+        if not df.empty and not df['创建日期'].isna().all():
+            # 1. 从筛选后的数据中获取最新月份（Period类型）
+            latest_month_period = df['创建日期'].dt.to_period('M').max()
+            latest_month_dt = latest_month_period.to_timestamp()  # 转为datetime用于计算
             
-            fig = px.area(
-                monthly_cat,
-                x='创建月份',
-                y='歌单数量',
-                color='分类',
-                title='近6个月各分类歌单增长趋势',
-                labels={'创建月份': '月份', '歌单数量': '歌单数量'},
-                template='plotly_white'
-            )
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            # 2. 计算筛选后数据的"近6个月"起始时间
+            from dateutil.relativedelta import relativedelta
+            six_months_ago_dt = latest_month_dt - relativedelta(months=6)
+            six_months_ago_period = six_months_ago_dt.to_period('M')  # 转回Period用于筛选
+            
+            # 3. 从筛选后的数据中，再筛选近6个月的记录
+            recent_data = df[df['创建月份'].between(six_months_ago_period, latest_month_period)]
+        
+            if len(recent_data) > 0:
+                monthly_cat = recent_data.groupby(['创建月份', '分类']).size().reset_index(name='歌单数量')
+                monthly_cat['创建月份'] = monthly_cat['创建月份'].astype(str)
+                
+                fig = px.area(
+                    monthly_cat,
+                    x='创建月份',
+                    y='歌单数量',
+                    color='分类',
+                    title='筛选后近6个月各分类歌单增长趋势',  # 标题明确标注"筛选后"
+                    labels={'创建月份': '月份', '歌单数量': '歌单数量'},
+                    template='plotly_white'
+                )
+                fig.update_layout(height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("筛选后的数据中，近6个月内没有找到歌单数据")
+        else:
+            st.info("筛选后的数据中没有有效日期数据，无法展示近6个月趋势")
     
     # Tab 3: 相关性分析
     with tab3:
@@ -512,17 +580,21 @@ def plot_style_playlist_visualizations(df):
             title='收藏率最高的10个歌单 (收藏量/播放量%)',
             labels={'名称': '歌单名称', '收藏播放比': '收藏率(%)'},
             template='plotly_white',
-            hover_data=['播放次数', '收藏量', '创建日期']
+            hover_data=['播放次数', '收藏量', '创建日期'],
+            category_orders={"名称": high_fav_ratio_df.sort_values('收藏播放比', ascending=False)['名称'].tolist()}
         )
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
         
         # 歌单长度分布
         st.markdown("### 歌单长度分布")
+        # 计算合适的 nbins 值，这里假设歌单长度最大可能到 10000，你可根据实际数据调整
+        max_playlist_length = df['歌单长度'].max() if not df.empty else 10000
+        nbins = int(max_playlist_length / 10)  
         fig = px.histogram(
             df,
             x='歌单长度',
-            nbins=30,
+            nbins=nbins,
             title='歌单长度分布',
             labels={'歌单长度': '歌曲数量', 'count': '歌单数量'},
             color_discrete_sequence=['#4ECDC4'],
@@ -553,9 +625,125 @@ def plot_style_playlist_visualizations(df):
                 st.info("没有找到有效的标签数据。")
         else:
             st.warning("数据中缺少 'tag1' 列，无法进行热门标签分析。")
+    
+    # Tab 5: 智能推荐（新增）
+    with tab5:
+        st.markdown("### 🎯 歌单智能推荐系统")
+        
+        # 创建推荐模型
+        @st.cache_resource
+        def create_playlist_recommendation_model(df):
+            """创建歌单推荐模型"""
+            # 准备文本数据
+            texts = df['特征文本'].tolist()
+            
+            # 创建TF-IDF向量izer
+            vectorizer = TfidfVectorizer(
+                tokenizer=jieba.cut,
+                stop_words=['的', '了', '是', '我', '在', '和', '也', '都', '很', '就', '还', '有'],
+                max_features=5000
+            )
+            
+            # 转换文本为TF-IDF矩阵
+            tfidf_matrix = vectorizer.fit_transform(texts)
+            
+            return vectorizer, tfidf_matrix
+        
+        # 获取推荐模型
+        if not df.empty and '特征文本' in df.columns:
+            with st.spinner("正在初始化推荐模型..."):
+                vectorizer, tfidf_matrix = create_playlist_recommendation_model(df)
+            
+            # 用户输入
+            st.markdown("#### 请输入你的需求")
+            user_query = st.text_input("例如：我想听伤感的华语歌曲，适合夜晚听的", "")
+            
+            # 推荐参数设置
+            col1, col2 = st.columns(2)
+            with col1:
+                min_play_count = st.number_input("最低播放次数", min_value=0, value=10000)
+            with col2:
+                recommendation_count = st.number_input("推荐数量", min_value=1, max_value=20, value=5)
+            
+            # 执行推荐
+            if st.button("获取推荐"):
+                if not user_query:
+                    st.warning("请输入你的音乐需求")
+                else:
+                    with st.spinner("正在为你推荐歌单..."):
+                        # 处理用户查询
+                        query_vector = vectorizer.transform([user_query])
+                        
+                        # 计算相似度
+                        similarities = cosine_similarity(query_vector, tfidf_matrix)[0]
+                        
+                        # 创建相似度DataFrame
+                        similarity_df = pd.DataFrame({
+                            'index': range(len(similarities)),
+                            'similarity': similarities
+                        })
+                        
+                        # 筛选相似度高的歌单
+                        similarity_df = similarity_df[similarity_df['similarity'] > 0.1].sort_values('similarity', ascending=False)
+                        
+                        # 获取推荐结果
+                        recommendations = []
+                        for _, row in similarity_df.iterrows():
+                            if len(recommendations) >= recommendation_count:
+                                break
+                                
+                            playlist_idx = int(row['index'])
+                            playlist = df.iloc[playlist_idx]
+                            
+                            # 过滤条件
+                            if playlist['播放次数'] >= min_play_count:
+                                recommendations.append({
+                                    'index': playlist_idx,
+                                    'similarity': row['similarity'],
+                                    'playlist': playlist
+                                })
+                        
+                        # 显示推荐结果
+                        if recommendations:
+                            st.markdown(f"#### 为你找到 {len(recommendations)} 个符合条件的歌单：")
+                            
+                            for rec in recommendations:
+                                playlist = rec['playlist']
+                                similarity_score = rec['similarity']
+                                
+                                # 生成匹配理由
+                                match_reasons = []
+                                query_words = set(jieba.cut(user_query))
+                                playlist_words = set(jieba.cut(playlist['特征文本']))
+                                common_words = query_words.intersection(playlist_words)
+                                
+                                if common_words:
+                                    match_reasons.append(f"包含关键词：{', '.join(common_words)}")
+                                if playlist['收藏播放比'] > df['收藏播放比'].mean():
+                                    match_reasons.append("收藏率高于平均水平")
+                                if playlist['评论播放比'] > df['评论播放比'].mean():
+                                    match_reasons.append("互动率较高")
+                                
+                                # 显示推荐卡片
+                                st.markdown(f"""
+                                <div class="recommendation-card">
+                                    <h4>{playlist['名称']}</h4>
+                                    <p><strong>分类：</strong>{playlist['分类']}</p>
+                                    <p><strong>播放次数：</strong>{playlist['播放次数']:,}</p>
+                                    <p><strong>收藏量：</strong>{playlist['收藏量']:,}</p>
+                                    <p><strong>歌单长度：</strong>{playlist['歌单长度']}首歌曲</p>
+                                    <p><strong>匹配理由：</strong>{' | '.join(match_reasons) if match_reasons else '综合特征匹配'}</p>
+                                    <span class="match-score">匹配度：{similarity_score:.2%}</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.info("没有找到完全匹配的歌单，建议尝试调整搜索关键词或降低播放次数要求")
+        else:
+            st.warning("数据不足，无法创建推荐模型")
 
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 def plot_rank_comment_visualizations(df):
     """4类榜单歌曲评论可视化"""
@@ -566,8 +754,8 @@ def plot_rank_comment_visualizations(df):
     st.markdown('<div class="sub-title">🎯 榜单歌曲评论深度分析</div>', unsafe_allow_html=True)
     
     # 创建标签页
-    tab1, tab2, tab3, tab4 = st.tabs(['情感分析', '评论量分析', '高频词分析', '高级洞察'])
-   
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(['情感分析', '评论量分析', '高频词分析', '高级洞察', '智能推荐'])
+    
     # Tab 1: 情感分析
     with tab1:
         col1, col2 = st.columns(2)
@@ -684,15 +872,29 @@ def plot_rank_comment_visualizations(df):
         if all_keywords:
             # 新增：将高频词列表转换为文本字符串
             keywords_text = ' '.join(all_keywords)  # 用空格连接高频词，供词云使用
+            # 1. 定义项目内字体路径（fonts文件夹下的simsun.ttc）
+            font_dir = Path(__file__).parent / "fonts"
+            font_path = font_dir / "STZHONGS.TTF"  # 确保字体文件名正确
             
-            keyword_counts = Counter(all_keywords).most_common(20)
-            keywords_df = pd.DataFrame(keyword_counts, columns=['关键词', '出现次数'])
-            
-            # 生成词云
-            font_path = 'C:/Windows/Fonts/simsun.ttc'
+            # 2. 验证字体文件是否存在，不存在则尝试系统字体，最后fallback
+            if not font_path.exists():
+                st.warning("项目内字体文件未找到，尝试加载系统字体...")
+                # 尝试系统字体（兼容不同环境）
+                system_fonts = [
+                    "C:/Windows/Fonts/STZHONGS.TTF"          # Windows
+                ]
+                for sys_font in system_fonts:
+                    if Path(sys_font).exists():
+                        font_path = Path(sys_font)
+                        break
+                else:
+                    # 所有尝试失败，用默认字体（可能无法显示中文，但不报错）
+                    font_path = None
+                    st.warning("系统字体也未找到，词云可能无法显示中文！")
 
+            # 生成词云
             wordcloud = WordCloud(
-                font_path=font_path,  # 新增字体路径参数，让 WordCloud 用指定字体渲染
+                font_path=str(font_path) if font_path else None,  # 路径转字符串（WordCloud需要str类型）
                 width=800,
                 height=400,
                 background_color='white',
@@ -702,7 +904,7 @@ def plot_rank_comment_visualizations(df):
                 contour_width=3,
                 contour_color=COLOR_PALETTE['primary']
             ).generate(keywords_text)  # 现在 keywords_text 已定义
-            
+                
             # 显示词云
             st.markdown("### 高频词云图")
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -765,23 +967,23 @@ def plot_rank_comment_visualizations(df):
         fig = px.bar(
             top_positive,
             x='歌曲名称',
-                            y='积极评论占比',
-                color='榜单类型',
-                title='积极评论占比最高的10首歌曲',
-                labels={'歌曲名称': '歌曲名称', '积极评论占比': '积极评论占比'},
-                template='plotly_white',
-                hover_data=['歌手', '评论总数', '高频字眼']
+            y='积极评论占比',
+            color='榜单类型',
+            title='积极评论占比最高的10首歌曲',
+            labels={'歌曲名称': '歌曲名称', '积极评论占比': '积极评论占比'},
+            template='plotly_white',
+            hover_data=['歌手', '评论总数', '高频字眼']
         )
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
             
-            # Top 10 消极评论占比最高的歌曲
+        # Top 10 消极评论占比最高的歌曲
         st.markdown("### Top 10 消极评论占比最高的歌曲")
         top_negative = df.nlargest(10, '消极评论占比')[['歌曲名称', '歌手', '榜单类型', '消极评论占比', '评论总数', '高频字眼']]
             
         fig = px.bar(
             top_negative,
-            x='歌曲名称',       
+            x='歌曲名称',
             y='消极评论占比',
             color='榜单类型',
             title='消极评论占比最高的10首歌曲',
@@ -793,7 +995,7 @@ def plot_rank_comment_visualizations(df):
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
             
-            # 各榜单歌曲情感特征雷达图
+        # 各榜单歌曲情感特征雷达图
         st.markdown("### 各榜单情感特征对比")
         rank_sentiment = df.groupby('榜单类型').agg({
             '积极评论占比': 'mean',
@@ -802,25 +1004,143 @@ def plot_rank_comment_visualizations(df):
             '评论总数': 'mean'
         }).reset_index()
             
-            # 数据标准化
+        # 数据标准化
         for col in ['积极评论占比', '消极评论占比', '中立评论占比', '评论总数']:
             rank_sentiment[col] = (rank_sentiment[col] - rank_sentiment[col].min()) / (rank_sentiment[col].max() - rank_sentiment[col].min())
             
-            fig = go.Figure()
-            for _, row in rank_sentiment.iterrows():
-                fig.add_trace(go.Scatterpolar(
-                    r=[row['积极评论占比'], row['消极评论占比'], row['中立评论占比'], row['评论总数']],
-                    theta=['积极评论占比', '消极评论占比', '中立评论占比', '平均评论数'],
-                    name=row['榜单类型']
-                ))
+        fig = go.Figure()
+        for _, row in rank_sentiment.iterrows():
+            fig.add_trace(go.Scatterpolar(
+                r=[row['积极评论占比'], row['消极评论占比'], row['中立评论占比'], row['评论总数']],
+                theta=['积极评论占比', '消极评论占比', '中立评论占比', '平均评论数'],
+                name=row['榜单类型']
+            ))
             
-            fig.update_layout(
-                polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-                showlegend=True,
-                height=500,
-                template='plotly_white'
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+            showlegend=True,
+            height=500,
+            template='plotly_white'
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Tab 5: 智能推荐（新增）
+    with tab5:
+        st.markdown("### 🎯 歌曲智能推荐系统")
+        
+        # 创建推荐模型
+        @st.cache_resource
+        def create_song_recommendation_model(df):
+            """创建歌曲推荐模型"""
+            # 准备文本数据
+            texts = df['特征文本'].tolist()
+            
+            # 创建TF-IDF向量izer
+            vectorizer = TfidfVectorizer(
+                tokenizer=jieba.cut,
+                stop_words=['的', '了', '是', '我', '在', '和', '也', '都', '很', '就', '还', '有'],
+                max_features=5000
             )
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # 转换文本为TF-IDF矩阵
+            tfidf_matrix = vectorizer.fit_transform(texts)
+            
+            return vectorizer, tfidf_matrix
+        
+        # 获取推荐模型
+        if not df.empty and '特征文本' in df.columns:
+            with st.spinner("正在初始化推荐模型..."):
+                vectorizer, tfidf_matrix = create_song_recommendation_model(df)
+            
+            # 用户输入
+            st.markdown("#### 请输入你的需求")
+            user_query = st.text_input("例如：我想听积极向上的流行歌曲，歌词要有梦想和希望", "")
+            
+            # 推荐参数设置
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                sentiment_preference = st.selectbox("情感倾向", ["不限", "积极", "消极", "中立"])
+            with col2:
+                min_comment_count = st.number_input("最低评论数", min_value=0, value=100)
+            with col3:
+                recommendation_count = st.number_input("推荐数量", min_value=1, max_value=20, value=5)
+            
+            # 执行推荐
+            if st.button("获取推荐"):
+                if not user_query:
+                    st.warning("请输入你的音乐需求")
+                else:
+                    with st.spinner("正在为你推荐歌曲..."):
+                        # 处理用户查询
+                        query_vector = vectorizer.transform([user_query])
+                        
+                        # 计算相似度
+                        similarities = cosine_similarity(query_vector, tfidf_matrix)[0]
+                        
+                        # 创建相似度DataFrame
+                        similarity_df = pd.DataFrame({
+                            'index': range(len(similarities)),
+                            'similarity': similarities
+                        })
+                        
+                        # 筛选相似度高的歌曲
+                        similarity_df = similarity_df[similarity_df['similarity'] > 0.05].sort_values('similarity', ascending=False)
+                        
+                        # 获取推荐结果
+                        recommendations = []
+                        for _, row in similarity_df.iterrows():
+                            if len(recommendations) >= recommendation_count:
+                                break
+                                
+                            song_idx = int(row['index'])
+                            song = df.iloc[song_idx]
+                            
+                            # 过滤条件
+                            if song['评论总数'] >= min_comment_count:
+                                if sentiment_preference == "不限" or song['情感倾向'] == sentiment_preference:
+                                    recommendations.append({
+                                        'index': song_idx,
+                                        'similarity': row['similarity'],
+                                        'song': song
+                                    })
+                        
+                        # 显示推荐结果
+                        if recommendations:
+                            st.markdown(f"#### 为你找到 {len(recommendations)} 首符合条件的歌曲：")
+                            
+                            for rec in recommendations:
+                                song = rec['song']
+                                similarity_score = rec['similarity']
+                                
+                                # 生成匹配理由
+                                match_reasons = []
+                                query_words = set(jieba.cut(user_query))
+                                song_words = set(jieba.cut(song['特征文本']))
+                                common_words = query_words.intersection(song_words)
+                                
+                                if common_words:
+                                    match_reasons.append(f"包含关键词：{', '.join(common_words)}")
+                                if song['情感倾向'] == '积极' and song['积极评论占比'] > df['积极评论占比'].mean():
+                                    match_reasons.append("积极评论占比较高")
+                                if song['评论总数'] > df['评论总数'].mean():
+                                    match_reasons.append("人气较高")
+                                
+                                # 显示推荐卡片
+                                st.markdown(f"""
+                                <div class="recommendation-card">
+                                    <h4>{song['歌曲名称']} - {song['歌手']}</h4>
+                                    <p><strong>榜单：</strong>{song['榜单类型']}</p>
+                                    <p><strong>评论数：</strong>{song['评论总数']:,}</p>
+                                    <p><strong>情感倾向：</strong>{song['情感倾向']} (积极: {song['积极评论占比']:.1%}, 消极: {song['消极评论占比']:.1%})</p>
+                                    <p><strong>高频关键词：</strong>{song['高频字眼'] if pd.notna(song['高频字眼']) else '无'}</p>
+                                    <p><strong>匹配理由：</strong>{' | '.join(match_reasons) if match_reasons else '综合特征匹配'}</p>
+                                    <span class="match-score">匹配度：{similarity_score:.2%}</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.info("没有找到完全匹配的歌曲，建议尝试调整搜索关键词或降低筛选条件")
+        else:
+            st.warning("数据不足，无法创建推荐模型")
 
 # ---------------------- 主界面布局与逻辑 ----------------------
 def main():
@@ -1083,6 +1403,7 @@ def main():
         
         # 高级可视化
         if not filtered_df.empty:
+            st.markdown("---")
             if selected_data_source == "13类风格歌单数据":
                 plot_style_playlist_visualizations(filtered_df)
             else:
