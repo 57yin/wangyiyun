@@ -162,6 +162,7 @@ def get_playlist_tracks(playlist_id, playlist_name):
 def fetch_comments_detailed(song_id, current_playlist_name):
     """
     核心函数：抓取高赞评论 + 按总评论数比例采集普通评论（纯百分比，不截断）
+    如果普通评论总数不足，则全部获取。
     返回：评论数据DataFrame + 统计摘要
     """
     song_id = str(song_id).strip()
@@ -271,7 +272,7 @@ def fetch_comments_detailed(song_id, current_playlist_name):
                 
                 time.sleep(random.uniform(0.5, 1.5))  # 页间延迟，避免限流
                 page += 1
-                # 防死循环：最多抓取50页（可根据需求调整，50页×20条=1000条）
+                # 防死循环：最多抓取100页（可根据需求调整，100页×20条=2000条）
                 if page >= 100:  
                     print(f"    - 已抓取{page-1}页普通评论，达到最大页数限制，停止抓取")
                     break

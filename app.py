@@ -699,18 +699,11 @@ def plot_rank_comment_visualizations(df):
     with tab3:
         # 合并所有高频词
         all_keywords = []
-        # 先遍历每行的高频词字符串
-        for keywords_str in df['高频字眼'].dropna():
-            if keywords_str and keywords_str != '':
-                # 按逗号拆分，得到单个词列表
-                single_keywords = [kw.strip() for kw in keywords_str.split(',') if kw.strip()]
-                # 将单个词逐个加入总列表
-                all_keywords.extend(single_keywords)
+        for keywords in df['高频字眼'].dropna():
+            if keywords and keywords != '':
+                all_keywords.extend([kw.strip() for kw in keywords.split(',') if kw.strip()])
         
         if all_keywords:
-            # 统计单个词的出现次数
-            keyword_counts = Counter(all_keywords).most_common()  # 可指定数量，如 .most_common(20) 获取Top20
-            keywords_df = pd.DataFrame(keyword_counts, columns=['关键词', '出现次数'])
             # 新增：将高频词列表转换为文本字符串
             keywords_text = ' '.join(all_keywords)  # 用空格连接高频词，供词云使用
             # 1. 定义项目内字体路径（fonts文件夹下的simsun.ttc）
@@ -753,15 +746,20 @@ def plot_rank_comment_visualizations(df):
             ax.axis('off')
             st.pyplot(fig)
             
-            # ------ 高频词条形图（单个词统计，展示每个词的出现次数） ------
+            # 原来的高频词条形图和榜单对比
+            keyword_counts = Counter(all_keywords).most_common(20)
+            keywords_df = pd.DataFrame(keyword_counts, columns=['关键词', '出现次数'])
+            
             col1, col2 = st.columns(2)
+            
             with col1:
+                # 高频词词云（条形图模拟）
                 fig = px.bar(
                     keywords_df,
                     x='出现次数',
                     y='关键词',
                     orientation='h',
-                    title='所有歌曲高频关键词统计（单个词）',
+                    title='所有歌曲高频关键词 Top 20',
                     labels={'出现次数': '出现次数', '关键词': '关键词'},
                     color='出现次数',
                     color_continuous_scale='Viridis',
@@ -769,27 +767,30 @@ def plot_rank_comment_visualizations(df):
                 )
                 fig.update_layout(height=500)
                 st.plotly_chart(fig, use_container_width=True)
-
-                # ------ 各榜单高频词对比（单个词，取各榜单TopN ） ------
-                with col2:
-                    st.markdown("### 各榜单TopN高频词（单个词）")
-                    rank_keywords = {}
-                    for rank in df['榜单类型'].unique():
-                        rank_df = df[df['榜单类型'] == rank]
-                        rank_single_keywords = []
-                        for keywords_str in rank_df['高频字眼'].dropna():
-                            if keywords_str and keywords_str != '':
-                                single_keywords = [kw.strip() for kw in keywords_str.split(',') if kw.strip()]
-                                rank_single_keywords.extend(single_keywords)
-                        if rank_single_keywords:
-                            # 统计单个词在该榜单的出现次数，取TopN（如Top5 ）
-                            rank_keywords[rank] = Counter(rank_single_keywords).most_common(5)  
-
-                    # 表格显示各榜单单个高频词及次数
-                    for rank, keywords in rank_keywords.items():
-                        st.subheader(f"{rank}")
-                        kw_df = pd.DataFrame(keywords, columns=['关键词', '出现次数'])
-                        st.dataframe(kw_df, use_container_width=True)
+            
+            with col2:
+                # 各榜单高频词对比（取前5个）
+                st.markdown("### 各榜单Top5高频词")
+                rank_keywords = {}
+                
+                for rank in df['榜单类型'].unique():
+                    rank_df = df[df['榜单类型'] == rank]
+                    rank_keywords_list = []
+                    
+                    for keywords in rank_df['高频字眼'].dropna():
+                        if keywords and keywords != '':
+                            rank_keywords_list.extend([kw.strip() for kw in keywords.split(',') if kw.strip()])
+                    
+                    if rank_keywords_list:
+                        rank_keywords[rank] = Counter(rank_keywords_list).most_common(5)
+                
+                # 创建表格显示
+                for rank, keywords in rank_keywords.items():
+                    st.subheader(f"{rank}")
+                    kw_df = pd.DataFrame(keywords, columns=['关键词', '出现次数'])
+                    st.dataframe(kw_df, use_container_width=True)
+        else:
+            st.info("没有找到有效的高频词数据")
   
     # Tab 4: 高级洞察
     with tab4:
